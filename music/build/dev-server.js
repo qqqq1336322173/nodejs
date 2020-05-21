@@ -11,7 +11,7 @@ var express = require('express')
 var webpack = require('webpack')
 var proxyMiddleware = require('http-proxy-middleware')
 var webpackConfig = require('./webpack.dev.conf')
-var axios = require('axios')
+var http = require('http');
 
 // default port where dev server listens for incoming traffic
 var port = process.env.PORT || config.dev.port
@@ -22,49 +22,98 @@ var autoOpenBrowser = !!config.dev.autoOpenBrowser
 var proxyTable = config.dev.proxyTable
 
 var app = express()
+var data = require('../music-data.json');
+// var musicData = data.musicData;
 
-var apiRoutes = express.Router()
+var apiRoutes = express.Router();
 
-apiRoutes.get('/getDiscList', function (req, res) {
-  var url = 'https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg'
-  axios.get(url, {
-    headers: {
-      referer: 'https://c.y.qq.com/',
-      host: 'c.y.qq.com'
-    },
-    params: req.query
-  }).then((response) => {
-    res.json(response.data)
-  }).catch((e) => {
-    console.log(e)
-  })
+apiRoutes.get('/music-data', function (req, res) {
+  res.json({
+    errno: 0,
+    musicData: data.musicData
+  });
+});
+
+// 获取 One 的接口
+apiRoutes.get('/one/:page?', function (req, res) {
+  let page = +req.params.page || 0;
+  let url = 'http://v3.wufazhuce.com:8000/api/onelist/idlist/?channel=wdj&version=4.0.2&uuid=ffffffff-a90e-706a-63f7-ccf973aae5ee&platform=android';
+  let idList = '';
+  let getIdList = new Promise((resolve, reject) => {
+    http.get(url, response => {
+      response.on('data', data => {
+        idList += data;
+      });
+      response.on('end', () => {
+        resolve(idList);
+      });
+    })
+  });
+  let getOne = function(id) {
+    let result = '';
+    let url = 'http://v3.wufazhuce.com:8000/api/onelist/' + id +'/0?channel=wdj&version=4.0.2&uuid=ffffffff-a90e-706a-63f7-ccf973aae5ee&platform=android';
+    return new Promise((resolve, reject) => {
+      http.get(url, response => {
+        response.on('data', data => {
+          result += data;
+        });
+        response.on('end', () => {
+          resolve(result);
+        })
+      })
+    });
+  }
+  getIdList.then(idList => JSON.parse(idList).data)
+           .then(data => {
+             return Promise.all( data.map((item) => {
+               return getOne(item).then(data => JSON.parse(data));
+             }))
+           })
+           .then(list => {
+             list = JSON.parse(JSON.stringify(list));
+             res.json(list[page]);
+           })
 })
 
-apiRoutes.get('/lyric', function (req, res) {
-  var url = 'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg'
+apiRoutes.get('/search/:num/:name', (req, res) => {
+  let num = req.params.num;
+  let name = req.params.name;
+  function search(n, keywords) {
+    return new Promise((resolve, reject) => {
+      let searchResult = '';
+      let url = encodeURI('http://s.music.qq.com/fcgi-bin/music_search_new_platform?t=0&n='+ n +'&aggr=1&cr=1&loginUin=0&format=json&inCharset=GB2312&outCharset=utf-8&notice=0&platform=jqminiframe.json&needNewCode=0&p=1&catZhida=0&remoteplace=sizer.newclient.next_song&w='+ keywords);
+      http.get(url, response => {
+        response.on('data', data => {
+          searchResult += data;
+        });
+        response.on('end', () => {
+          resolve(searchResult);
+        })
+      })
+    })
+  }
 
-  axios.get(url, {
-    headers: {
-      referer: 'https://c.y.qq.com/',
-      host: 'c.y.qq.com'
-    },
-    params: req.query
-  }).then((response) => {
-    var ret = response.data
-    if (typeof ret === 'string') {
-      var reg = /^\w+\(({[^()]+})\)$/
-      var matches = ret.match(reg)
-      if (matches) {
-        ret = JSON.parse(matches[1])
-      }
-    }
-    res.json(ret)
-  }).catch((e) => {
-    console.log(e)
-  })
-})
+  search(num, name)
+    .then(searchResult => {
+      res.json(JSON.parse(searchResult));
+    })
 
-app.use('/api', apiRoutes)
+});
+
+apiRoutes.get('/hot', (req, res) => {
+  let hotKeywords = ['歌手', '张杰', '赵雷', '李健', '林志炫', '张碧晨', '梁博', '周笔畅', '张靓颖', '陈奕迅', '周杰伦', '王力宏', 'TFBoys', '李玉刚', '魏晨', '薛之谦'];
+  let rHot = new Array(6);
+  for (let i = 0; i < rHot.length; i++) {
+    let length = hotKeywords.length;
+    let random = Math.floor(length * Math.random());
+    rHot[i] = hotKeywords[random];
+    hotKeywords.splice(random, 1);
+  }
+  res.json(rHot);
+
+});
+
+app.use('/api', apiRoutes);
 
 var compiler = webpack(webpackConfig)
 
@@ -109,26 +158,18 @@ app.use(staticPath, express.static('./static'))
 
 var uri = 'http://localhost:' + port
 
-var _resolve
-var readyPromise = new Promise(resolve => {
-  _resolve = resolve
+devMiddleware.waitUntilValid(function () {
+  console.log('> Listening at ' + uri + '\n')
 })
 
-console.log('> Starting dev server...')
-devMiddleware.waitUntilValid(() => {
-  console.log('> Listening at ' + uri + '\n')
+module.exports = app.listen(port, function (err) {
+  if (err) {
+    console.log(err)
+    return
+  }
+
   // when env is testing, don't need open it
   if (autoOpenBrowser && process.env.NODE_ENV !== 'testing') {
     opn(uri)
   }
-  _resolve()
 })
-
-var server = app.listen(port)
-
-module.exports = {
-  ready: readyPromise,
-  close: () => {
-    server.close()
-  }
-}
